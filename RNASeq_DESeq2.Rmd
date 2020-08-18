@@ -1,0 +1,509 @@
+---
+title: "allo_APOE_mouse_DESeq2"
+author: "Raymond"
+date: "04/04/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+# BiocManager::install("sva", version = "3.8")
+library("sva")
+library("tximport")
+library("readr")
+library("tximportData")
+library("DESeq2")
+library("readxl")
+#library("tidyverse")
+library("vsn")
+library("hexbin")
+library("ggplot2")
+
+
+
+if (!require("RColorBrewer")) {
+install.packages("RColorBrewer")
+library(RColorBrewer)
+}
+
+
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE)
+options(stringsAsFactors=FALSE)
+theme_set(theme_bw()) + theme_update(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),plot.title = element_text(hjust = 0.5),legend.title=element_blank()) #legend.position = c(0.8, 0.8),
+
+display.brewer.all() 
+brewer.pal(n = 10, name = "Paired")
+brewer.pal(name="Dark2", n = 6)
+mycolors = c( brewer.pal(name="Paired", n = 10))
+#mycolors <- mycolors[c(10:1)]
+mycolors <- mycolors[c(7,8,5,6,1,2,9,10,3,4)]
+color_2pairs <- c("#B2DF8A","#33A02C" ,"#FDBF6F" ,"#FF7F00")
+color_2pairs <- c("#7083a0","#1a1e27","#b6716f","#7c0000")
+
+```
+
+
+
+## R Markdown
+#PCA function
+####PCA functions
+Functions
+```{r}
+#MyRFunctions.R
+source("~/Dropbox/RaymondTools/scripts/MyRFunctions.R")
+```
+
+```{r}
+## Modified plotPCA from DESeq2 package. Shows the Names of the Samples (the first col of SampleTable), and uses ggrepel pkg to plot them conveniently.
+# @SA 10.02.2017 
+library(genefilter)
+library(ggplot2)
+library(ggrepel)
+#install.packages("ggrepel")
+mycolors
+plotPCA.Raymond <- function (object, intgroup = "condition", ntop = 500, returnData = FALSE,pc_1=1,pc_2=2,label=FALSE) 
+{
+  #
+  #object=vsd
+  #intgroup="summary"
+  #ntop=500
+  #pc_1=2
+  #pc_2=3
+  if(FALSE){
+    object=vsd
+    intgroup="Summary"
+    ntop=500
+    pc_1=2
+    pc_2=3
+    returnData=FALSE
+  }
+  rv <- rowVars(assay(object))
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, 
+                                                     length(rv)))]
+  pca <- prcomp(t(assay(object)[select, ]))
+  percentVar <- pca$sdev^2/sum(pca$sdev^2)
+  if (!all(intgroup %in% names(colData(object)))) {
+    stop("the argument 'intgroup' should specify columns of colData(dds)")
+  }
+  intgroup.df <- as.data.frame(colData(object)[, intgroup, drop = FALSE])
+  if (length(intgroup) > 1) {
+    group <-factor(apply(intgroup.df, 1, paste, collapse = " : "))
+  }  else {
+    group <-colData(object)[[intgroup]]
+  }
+  d <- data.frame(PC1 = pca$x[, pc_1], PC2 = pca$x[, pc_2], group = group, 
+                  intgroup.df, name = colData(object)[,1])
+  if (returnData) {
+    attr(d, "percentVar") <- percentVar[c(pc_1,pc_2)]
+    return(d)
+  }
+   # ggplot(data = d, aes_string(x = "PC1", y = "PC2", color = "group", label = "name")) + geom_point(size = 3) + xlab(paste0(paste0("PC",pc_1,": "), round(percentVar[pc_1] * 100), "% variance")) + ylab(paste0(paste0("PC",pc_2,": "), round(percentVar[pc_2] * 100), "% variance")) + coord_fixed() + geom_text_repel(size=3) 
+  if(label){
+    label_tag="name"
+  }else{
+    label_tag=NA
+  }
+  p <- ggplot(data = d, aes_string("PC1", "PC2", color=intgroup)) +
+    geom_point(size=3) +
+    xlab(paste0(paste0("PC",pc_1,": "),round(percentVar[pc_1] * 100),"% variance")) +
+    ylab(paste0(paste0("PC",pc_2,": "),round(percentVar[pc_2] * 100),"% variance")) + 
+    coord_fixed()+geom_text(aes_string(label = label_tag, color=intgroup),hjust=0, vjust=0)
+    #scale_color_manual(values = mycolors)
+  return (p)
+    
+}
+```
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+current_tissue <- c("Hippo","Hypo")  #Astrocyte,Neurons
+dir <- "~/data/Fei/Tfam/salmonResult_V15"
+s2c_pre <- read_excel("~/Dropbox/mouse/guoyuan/2020April/demographics_guoyuan2020Apr.xlsx",sheet=1)
+s2c_pre 
+#s2c <- dplyr::select(s2c_pre,Sample='Sample',Sex='sex',APOE='genotype',Treatment='treatment',Summary='summary',Sample3='sample3',pc2_label="pc2_label")
+s2c <- dplyr::mutate(s2c_pre, run =paste( dir,"/",SampleID,".quant",sep=""))
+s2c
+s2c_select<- s2c[s2c$Tissue %in% current_tissue,]
+s2c_select <-s2c_select[!(s2c_select$SampleID %in% c("FY2","FY26","FY34")),]
+```
+
+
+
+```{r}
+
+t2g <- read.delim2("~/Dropbox/RaymondTools/DEG/tx2gene_release95_mouse.txt",sep=",")
+head(t2g)
+```
+
+##Import data to DESeq2
+```{r}
+#dir <- "/Users/yuanshang/Documents/rawdata/Mouse_allo/results/"
+#abundance.tsv
+#abundance.h5
+files <- file.path(s2c_select$run, "quant.sf")
+names(files) <- s2c_select$SampleID
+file.exists(files)
+tx2gene <- t2g[,c("TXNAME","SYMBOL")]#dplyr::select(t2g,TXNAME='target_id', GENEID='ext_gene')
+head(tx2gene)
+
+
+#write_tsv(tx2gene,path="/Users/yuanshang/Documents/rawdata/Mouse_allo/tx2gene_mouse.txt",col_names=TRUE)
+#tx2gene2 <- read.delim2("/Users/yuanshang/Documents/rawdata/Mouse_allo/tx2gene_mouse.txt",stringsAsFactors = FALSE,header = TRUE,sep="\t")
+txi.salmon_gene <- tximport(files, type = "salmon", tx2gene=tx2gene,ignoreTxVersion=TRUE)
+head(txi.salmon_gene$counts,10)
+#save(txi.salmon_gene,file=paste0("~/Dropbox/RNAseq_Rat/Allo_Tian/",current_celltype,"/txi.salmon_gene_",current_celltype,".Rdata"))
+load(file=paste0("~/Dropbox/mouse/guoyuan/2020April/","txi.salmon_gene_all",".Rdata"))
+#write_tsv(txi.kallisto_gene,path="/Users/yuanshang/Documents/rawdata/Mouse_allo/txi_kallisto_gene.txt",col_names = TRUE)
+```
+## Load DESeq2
+```{r}
+current_tissue = "Hypo"  #Hippo,Hypo
+#convert s2c_hippo$condition to factor
+s2c_select <- s2c_select[s2c_select$Tissue == current_tissue,]
+s2c_select$Sample <- s2c_select$SampleID
+#s2c_select$Treatment <- factor(s2c_select$Treatment,levels=c("SD","Veh","Allo"))
+s2c_select$Tissue <- factor(s2c_select$Tissue,levels=c("Hypo","Hippo"))
+s2c_select$Group <- factor(s2c_select$Group,levels=c("Cont" ,"Group1" ,"Group2"))
+
+if(FALSE){
+#remove outliers for Astrocyte
+s2c_select <- s2c_select[s2c_select$Sample != "RB17",]
+}
+
+txi.salmon_gene_select <- txi.salmon_gene
+if(FALSE){
+txi.salmon_gene_select[[1]] <- txi.salmon_gene_select[[1]][,s2c_select$Sample]
+txi.salmon_gene_select[[2]] <- txi.salmon_gene_select[[2]][,s2c_select$Sample]
+
+txi.salmon_gene_select[[3]] <- txi.salmon_gene_select[[3]][s2c_select$Sample]
+txi.salmon_gene_select[[4]] <- txi.salmon_gene_select[[4]][,s2c_select$Sample]
+
+}
+
+ddsTxi_select <- DESeqDataSetFromTximport(txi.salmon_gene_select,
+                                   colData = s2c_select,
+                                   design = ~  Tissue+Group)
+if(FALSE){
+  ddsTxi_select <- DESeqDataSetFromTximport(txi.salmon_gene_select,
+                                   colData = s2c_select,
+                                   design = ~  Group)
+}
+ddsTxi_select <-ddsTxi_select[ rowSums(DESeq2::counts(ddsTxi_select) >1) > 3, ]
+
+dim(ddsTxi_select)
+
+```
+
+#DESeq for all samples
+```{r}
+#count(ddsTxi_select)
+if(FALSE){
+dds_select <- DESeq(ddsTxi_select)
+vsd_select <- vst(dds_select)
+write.csv(as.data.frame(assay(vsd_select)),file=paste0(current_tissue,"/",current_tissue,"_vsd.csv"))
+write.table(as.data.frame(assay(vsd_select)),file=paste0(current_tissue,"/",current_tissue,"_vsd_cibersort.csv"),sep="\t",quote = FALSE)
+
+tmp <- counts(dds_select,normalized=TRUE)
+write.csv(as.data.frame(counts(dds_select,normalized=TRUE)),file=paste0(current_tissue,"/",current_tissue,"_NormalizedCounts.csv"))
+#write.csv(as.data.frame(counts(dds_select,normalized=FALSE)),file=paste0(current_tissue,"/",current_tissue,"_unNormalizedCounts.csv"))
+}
+```
+
+```{r}
+plotCounts(dds=dds_select,gene="Pycard",intgroup = "Group")
+```
+
+###PCA plot
+```{r}
+plotPCA.Raymond(vsd_select,intgroup = "Group",pc_1=1,pc_2=2,label=T)+scale_color_manual(values = color_2pairs)
+
+#RB17 is outliers based on PCA
+```
+
+
+```{r}
+plotPCA.Raymond(vsd_select,intgroup = "Group",pc_1=1,pc_2=2)+scale_color_manual(values = color_2pairs)
+```
+
+
+#Save PCA with Batch
+```{r}
+
+s2c2 <- s2c_select
+#s2c2$Sample <- s2c2$Sample3
+s2c2$Sample <- s2c2$SampleID
+#s2c2$Group <- paste0(s2c2$Tissue,s2c2$Group)
+s2c2$Group<- factor(s2c2$Group )
+droplevels(s2c2$Group)
+vsd_data <- assay(vsd_select)
+vst_veh_data <- vsd_data[,s2c2$Sample]
+#var(t(vst_veh_data[1:20,]))
+#vst_veh_data[1:5,1:20] -> testdata
+gene_var <- apply(vst_veh_data,MARGIN=1, var)
+order(gene_var,decreasing = T) [1:1000] -> select_PCA
+#install.packages("lattice")
+#library("lattice")
+data_PCA <- vst_veh_data[select_PCA,]
+myPCAplot(geneset_f=rownames(data_PCA),
+          name_f="PCA based one TOP 1000 variant genes",
+          shortname_f=paste0(current_tissue,"_PCA2"),
+          condition_f=s2c2,
+          vsd_data_f=data_PCA,
+          directory_f=paste0(current_tissue,"/PCA"),
+          pc_x_f=1L,pc_y_f=2L,color_set_f=mycolors[1:6],
+          log_f=FALSE,center_f=TRUE,scale_f=FALSE)
+```
+
+
+
+
+
+
+
+#DEG analysis and gsea analysis
+```{r}
+library(msigdbr)
+msigdbr_show_species()
+m_t2g <- msigdbr(species = "Mus musculus", category = "H") %>% 
+  dplyr::select(gs_name, gene_symbol)
+head(m_t2g)
+
+m2_t2g <- msigdbr(species = "Mus musculus", category = "C2") %>% 
+  dplyr::select(gs_name, gene_symbol)
+m2_t2g <- m2_t2g[startsWith(m2_t2g$gs_name,"KEGG"),]
+head(m2_t2g)
+
+
+library(clusterProfiler)
+
+
+colnames(coefficients(dds_select))
+#groups <- c("SD","Veh","Allo")
+groups <- as.character(unique(s2c_select$Group))
+for(i in 1:(length(groups)-1)){
+  for(j in (i+1):length(groups)){
+    g1 <- as.character(groups[i])
+    g2 <- groups[j]
+    result_tmp <- results(dds_select, contrast=c("Group",g2,g1))
+    summary(result_tmp)
+    #write.csv(as.data.frame(result_tmp),file=paste0(current_tissue,"/",current_tissue,"_",g2,"_",g1,".csv")) #_OnlyBatch2
+    
+    resLFC <- lfcShrink(dds_select, contrast=c("Group",g2,g1),type="ashr")
+    #resLFC <- lfcShrink(result_tmp)
+    genelist_resLFC  <- resLFC[order(resLFC$log2FoldChange),c("baseMean","log2FoldChange")]
+    genelist_resLFC$gene <- rownames(genelist_resLFC)
+    genelist_resLFC <- genelist_resLFC[,c(3,2)]
+    genelist_resLFC <- genelist_resLFC[order(genelist_resLFC$log2FoldChange,decreasing = T),]
+    #write.table(genelist_resLFC,file=paste0(current_tissue,"/",current_tissue,"_",g2,"_",g1,".rnk"),row.names = FALSE, col.names=FALSE,quote = FALSE, sep="\t") #_onlyBatch2
+    genelist_GSEA <- genelist_resLFC[,2]
+    names(genelist_GSEA) <- as.character(genelist_resLFC[,1])
+    genelist_GSEA <- sort(genelist_GSEA, decreasing = TRUE)
+    genelist_GSEA[!startsWith(names(genelist_GSEA),"UNKNOWN")] -> genelist_GSEA
+    
+    
+    em_hallmark <- GSEA(genelist_GSEA, TERM2GENE = m_t2g,pvalueCutoff = 0.1)
+    em_kegg <- GSEA(genelist_GSEA*10, TERM2GENE = m2_t2g,pvalueCutoff = 0.1)
+    head(em_hallmark)
+    write.csv(as.data.frame(em_hallmark),file=paste0(current_tissue,"/hallmarkGSEA_",current_tissue,"_",g2,"_",g1,".csv")) #_OnlyBatch2
+    write.csv(as.data.frame(em_kegg),file=paste0(current_tissue,"/keggGSEA_",current_tissue,"_",g2,"_",g1,".csv")) #_OnlyBatch2
+
+  }
+}
+#veh_M.APOE4vsM.APOE3 <- results(dds_veh, contrast=c("Sex.APOE","M.APOE4","M.APOE3"))
+```
+
+```{r}
+p1 <- gseaplot(em_hallmark, geneSetID = 1, by = "runningScore", title = em_hallmark$Description[1])
+p2 <- gseaplot(em_hallmark, geneSetID = 1, by = "preranked", title = em_hallmark$Description[1])
+p3 <- gseaplot(em_hallmark, geneSetID = 1, title = em_hallmark$Description[1])
+cowplot::plot_grid(p1, p2, p3, ncol=1, labels=LETTERS[1:3])
+```
+
+#Gene Set Enrichment Analysis: enricher
+```{r}
+library(openxlsx)
+library(org.Rn.eg.db)
+library(org.Mm.eg.db)
+library(clusterProfiler)
+#keytypes(org.Mm.eg.db)
+colnames(coefficients(dds_select))
+groups <- c("Cont", "Group1" , "Group2")
+GO_types <- c("BP","CC","MF")
+
+for(i in 1:(length(groups)-1)){
+  for(j in (i+1):length(groups)){
+    g1 <- groups[i]
+    g2 <- groups[j]
+    result_tmp <- results(dds_select, contrast=c("Group",g2,g1))
+    for(m in 1:2){
+      if(m==1){
+        select_tmp <- result_tmp$padj<0.05 & result_tmp$log2FoldChange>0
+        select_tmp[is.na(select_tmp)] <- FALSE
+        which.color <- paste0(current_tissue,"/",g2,"_vs_",g1,"_up") #OnlyBatch2_
+      }else{
+        select_tmp <- result_tmp$padj<0.05 & result_tmp$log2FoldChange<0
+        select_tmp[is.na(select_tmp)] <- FALSE
+        which.color <- paste0(current_tissue,"/",g2,"_vs_",g1,"_down")
+      }
+    
+    rownames(result_tmp[select_tmp,] ) -> genelist_tmp
+
+    trait_allGenes_entrez <- mapIds(org.Mm.eg.db,
+                     keys=genelist_tmp,
+                     column="ENTREZID", #ENSEMBL
+                     keytype="SYMBOL", #SYMBOL
+                     multiVals="first")
+     trait_allGenes_entrez[!is.na(trait_allGenes_entrez)] -> trait_allGenes_entrez
+     if(length(trait_allGenes_entrez) < 20){
+       next;
+     }
+     for(k in 1:3){
+       GO_type = GO_types[k]
+       ego_allgene <- enrichGO(gene          = trait_allGenes_entrez,
+                # universe      = names(geneList),
+                OrgDb         = org.Mm.eg.db,
+                ont           = GO_type,  #BP, MF (Molecular Function), CC (Cellular Components) 
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.1,
+                qvalueCutoff  = 0.1,
+                readable      = TRUE)
+       length_positive <- length(as.data.frame(ego_allgene)[,1])
+       if(length_positive >=1){
+          GO_BP <- as.data.frame(ego_allgene)
+          write.xlsx(GO_BP,paste0(which.color,"_AllgeneGO",length(trait_allGenes_entrez),"_genes_GO_",GO_type,".xlsx"))
+          cnetplot <- cnetplot(ego_allgene,showCategory = 5)
+          ggsave(filename=paste0(which.color,"_cnetplot_",GO_type,".png"),cnetplot,width=8,height=4,dpi=300)
+          dot_plot <- dotplot(ego_allgene,showCategory = 10)
+          ggsave(filename=paste0(which.color,"_dotPlot_",GO_type,"_TOP10.png"),dot_plot,width=10,height=5,dpi=300)
+          dot_plot2 <- dotplot(ego_allgene,showCategory = min(30,length_positive))
+          ggsave(filename=paste0(which.color,"_dotPlot_",GO_type,".png"),dot_plot2,width=10,height=ceiling(min(30,length_positive)/2),dpi=300)
+       }
+        cat(paste0(which.color,"\t",GO_type,"\t","All","\n"))
+          }
+     
+    }
+
+  }
+}
+```
+
+
+
+#Pathview
+##OVerall difference, GSEA
+```{r}
+
+groups <- c("Cont", "Group1" , "Group2")
+
+
+res_FFA_FFV <- results(dds_FF, contrast=c("Summary","FFA","FFV"))
+write.csv(as.data.frame(res_FFA_FFV),file="~/Dropbox/mouse/allo_apoe/NewDEG/mouse_FFA_FFV_newModel.csv")
+
+
+res_FZA_FZV <- results(dds_FZ, contrast=c("Summary","FZA","FZV"))
+write.csv(as.data.frame(res_FZA_FZV),file="~/Dropbox/mouse/allo_apoe/NewDEG/mouse_FZA_FZV_newModel.csv")
+
+res_FTA_FTV <- results(dds_FT, contrast=c("Summary","FTA","FTV"))
+write.csv(as.data.frame(res_FTA_FTV),file="~/Dropbox/mouse/allo_apoe/NewDEG/mouse_FTA_FTV_newModel.csv")
+
+res_MFA_MFV <- results(dds_MF, contrast=c("Summary","MFA","MFV"))
+write.csv(as.data.frame(res_MFA_MFV),file="~/Dropbox/mouse/allo_apoe/NewDEG/mouse_MFA_MFV_newModel.csv")
+
+res_MTA_MTV <- results(dds_MT, contrast=c("Summary","MTA","MTV"))
+write.csv(as.data.frame(res_MTA_MTV),file="~/Dropbox/mouse/allo_apoe/NewDEG/mouse_MTA_MTV_newModel.csv")
+
+
+resLFC <- lfcShrink(dds_FF,  coef=2,type="apeglm")
+genelist_AllovsVeh <- resLFC[order(resLFC$log2FoldChange),c("baseMean","log2FoldChange")]
+genelist_AllovsVeh$gene <- rownames(genelist_AllovsVeh)
+genelist_AllovsVeh <- genelist_AllovsVeh[,c(3,2)]
+genelist_AllovsVeh <- genelist_AllovsVeh[order(genelist_AllovsVeh$log2FoldChange,decreasing = T),]
+write.table(genelist_AllovsVeh,file="~/Dropbox/mouse/allo_apoe/NewDEG/mouse_deseq2_FFA_FFV_newModel.rnk",row.names = FALSE, col.names=FALSE,quote = FALSE, sep="\t")
+
+resLFC <- lfcShrink(dds_FZ,  coef=2,type="apeglm")
+genelist_AllovsVeh <- resLFC[order(resLFC$log2FoldChange),c("baseMean","log2FoldChange")]
+genelist_AllovsVeh$gene <- rownames(genelist_AllovsVeh)
+genelist_AllovsVeh <- genelist_AllovsVeh[,c(3,2)]
+genelist_AllovsVeh <- genelist_AllovsVeh[order(genelist_AllovsVeh$log2FoldChange,decreasing = T),]
+write.table(genelist_AllovsVeh,file="~/Dropbox/mouse/allo_apoe/NewDEG/mouse_deseq2_FZA_FZV_newModel.rnk",row.names = FALSE, col.names=FALSE,quote = FALSE, sep="\t")
+
+resLFC_FT <- lfcShrink(dds_FT,  coef=2,type="apeglm")
+genelist_AllovsVeh <- resLFC_FT[order(resLFC_FT$log2FoldChange),c("baseMean","log2FoldChange")]
+genelist_AllovsVeh$gene <- rownames(genelist_AllovsVeh)
+genelist_AllovsVeh <- genelist_AllovsVeh[,c(3,2)]
+genelist_AllovsVeh <- genelist_AllovsVeh[order(genelist_AllovsVeh$log2FoldChange,decreasing = T),]
+write.table(genelist_AllovsVeh,file="~/Dropbox/mouse/allo_apoe/NewDEG/mouse_deseq2_FTA_FTV_newModel.rnk",row.names = FALSE, col.names=FALSE,quote = FALSE, sep="\t")
+
+resLFC_MF <- lfcShrink(dds_MF,  coef=2,type="apeglm")
+genelist_AllovsVeh <- resLFC_MF[order(resLFC_MF$log2FoldChange),c("baseMean","log2FoldChange")]
+genelist_AllovsVeh$gene <- rownames(genelist_AllovsVeh)
+genelist_AllovsVeh <- genelist_AllovsVeh[,c(3,2)]
+genelist_AllovsVeh <- genelist_AllovsVeh[order(genelist_AllovsVeh$log2FoldChange,decreasing = T),]
+write.table(genelist_AllovsVeh,file="~/Dropbox/mouse/allo_apoe/NewDEG/mouse_deseq2_MFA_MFV_newModel.rnk",row.names = FALSE, col.names=FALSE,quote = FALSE, sep="\t")
+
+resLFC_MT <- lfcShrink(dds_MT,  coef=2,type="apeglm")
+genelist_AllovsVeh <- resLFC_MT[order(resLFC_MT$log2FoldChange),c("baseMean","log2FoldChange")]
+genelist_AllovsVeh$gene <- rownames(genelist_AllovsVeh)
+genelist_AllovsVeh <- genelist_AllovsVeh[,c(3,2)]
+genelist_AllovsVeh <- genelist_AllovsVeh[order(genelist_AllovsVeh$log2FoldChange,decreasing = T),]
+write.table(genelist_AllovsVeh,file="~/Dropbox/mouse/allo_apoe/NewDEG/mouse_deseq2_MTA_MTV_newModel.rnk",row.names = FALSE, col.names=FALSE,quote = FALSE, sep="\t")
+```
+##Pathview
+
+```{r}
+
+genelist_AllovsVeh2 <- log(resLFC$pvalue) * sign(resLFC$log2FoldChange)
+
+
+
+
+detach("package:dplyr", unload=TRUE)
+library(pathview)
+library(reshape)
+
+#hsa03010    KEGG_RIBOSOME
+#hsa04144  Endocytosis
+#hsa04660, T cell receptor signaling pathway
+#hsa05010,AD
+#hsa00190,Oxidative phosphorylation
+#hsa04060,Cytokine-cytokine receptor interaction
+mtGene_transfer <- data.frame(ori=c("mt-Atp6", "mt-Atp8", "mt-Co1",  "mt-Co2",  "mt-Co3",  "mt-Cytb", "mt-Nd1",  "mt-Nd2",  "mt-Nd3",  "mt-Nd4",  "mt-Nd4l", "mt-Nd5",  "mt-Nd6"),
+                              kegg=c("ATP6","ATP8","COX1","COX2","COX3","CYTB","ND1","ND2","ND3","ND4","ND4L","ND5","ND6"))
+rownames(mtGene_transfer) <- mtGene_transfer$ori
+tmp_res <- res_MTA_MTV
+genelist_AllovsVeh2 <- -1*sign(tmp_res$log2FoldChange) * log10(tmp_res$pvalue)
+names(genelist_AllovsVeh2) <- rownames(tmp_res)
+genelist_AllovsVeh2 -> genelist_AllovsVeh3
+tmp_names <- names(genelist_AllovsVeh3)
+
+for(i in 1:length(genelist_AllovsVeh3)){
+  if(tmp_names[i] %in% mtGene_transfer$ori){
+    tmp_names[i] <- mtGene_transfer[tmp_names[i],2]
+  }
+}
+names(genelist_AllovsVeh3) <- tmp_names
+hsa00190_AD_NCI <- pathview(gene.data  = genelist_AllovsVeh3,
+                     gene.idtype="SYMBOL",  #entrez,ENTREZID
+                     pathway.id = "mmu00190",#rno05165
+                     species    = "mmu",
+                     kegg.dir   = "./pathview/",
+                     out.suffix ="MTA_MTV_OxidativePhosphorylation",
+                     limit      = list(gene=2, cpd=2))
+
+pathview(gene.data  = genelist_AllovsVeh3,
+                     gene.idtype="SYMBOL",  #entrez,ENTREZID
+                     pathway.id = "mmu04660",#rno05165
+                     species    = "mmu",
+                     kegg.dir   = "./pathview/",
+                     out.suffix ="FFA_FFV_T cell receptor signaling pathway",
+                     limit      = list(gene=3, cpd=3))
+```
+
+
+
